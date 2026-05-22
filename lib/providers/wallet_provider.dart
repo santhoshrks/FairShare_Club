@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/wallet_transaction_model.dart';
 import '../services/firestore_service.dart';
@@ -7,17 +8,27 @@ import 'group_provider.dart';
 // ─── Wallet Transactions (real-time Firestore stream) ─────────────────────────
 class WalletNotifier extends StateNotifier<List<WalletTransactionModel>> {
   WalletNotifier() : super([]) {
-    _subscription =
-        FirestoreService.instance.walletTxsStream().listen((txs) {
-      state = txs;
+    _authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
+      _txSub?.cancel();
+      _txSub = null;
+      if (user != null) {
+        _txSub =
+            FirestoreService.instance.walletTxsStream().listen((txs) {
+          state = txs;
+        });
+      } else {
+        state = [];
+      }
     });
   }
 
-  StreamSubscription<List<WalletTransactionModel>>? _subscription;
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<List<WalletTransactionModel>>? _txSub;
 
   @override
   void dispose() {
-    _subscription?.cancel();
+    _authSub?.cancel();
+    _txSub?.cancel();
     super.dispose();
   }
 
@@ -35,13 +46,21 @@ final walletProvider =
   return WalletNotifier();
 });
 
+/// Per-group real-time wallet transactions stream.
+final _groupWalletTxsStreamProvider =
+    StreamProvider.family<List<WalletTransactionModel>, String>(
+        (ref, groupId) {
+  return FirestoreService.instance.walletTxsByGroupStream(groupId);
+});
+
 final walletTxsByGroupProvider =
     Provider.family<List<WalletTransactionModel>, String>((ref, groupId) {
-  return ref
-      .watch(walletProvider)
-      .where((t) => t.groupId == groupId)
-      .toList()
-    ..sort((a, b) => b.date.compareTo(a.date));
+  return ref.watch(_groupWalletTxsStreamProvider(groupId)).valueOrNull ??
+      (ref
+          .watch(walletProvider)
+          .where((t) => t.groupId == groupId)
+          .toList()
+        ..sort((a, b) => b.date.compareTo(a.date)));
 });
 
 // Per member balance: credits - debits

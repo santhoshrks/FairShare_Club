@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
+import '../models/contribution_model.dart';
+import '../models/group_model.dart';
 import '../models/member_model.dart';
 import '../providers/group_provider.dart';
 import '../providers/expense_provider.dart';
+import '../providers/pool_provider.dart';
 import '../providers/auth_provider.dart';
 import '../services/firestore_service.dart';
 import '../services/invite_service.dart';
 import '../utils/constants.dart';
 import '../utils/helpers.dart';
+import '../widgets/contacts_picker_dialog.dart';
 import '../widgets/member_avatar.dart';
 import '../widgets/empty_state.dart';
 
@@ -33,13 +37,16 @@ class _MemberScreenState extends ConsumerState<MemberScreen> {
     final group = ref.watch(groupByIdProvider(widget.groupId));
     final theme = Theme.of(context);
 
+    // No remove option for pool fund groups
+    final isPoolFund = group?.type == AppConstants.poolFund;
+
     final content = members.isEmpty
         ? EmptyState(
             icon: Icons.person_add,
             title: 'No Members',
             subtitle: 'Add members to this group',
             actionLabel: 'Add Member',
-            onAction: () => _showAddMemberDialog(context, ref),
+            onAction: () => _showAddMemberDialog(context, ref, group),
           )
         : ListView.builder(
             padding: const EdgeInsets.all(16),
@@ -56,11 +63,22 @@ class _MemberScreenState extends ConsumerState<MemberScreen> {
                         style: theme.textTheme.titleMedium
                             ?.copyWith(fontWeight: FontWeight.bold),
                       ),
-                      TextButton.icon(
-                        onPressed: () =>
-                            _showAddMemberDialog(context, ref),
-                        icon: const Icon(Icons.person_add, size: 16),
-                        label: const Text('Add Member'),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          TextButton.icon(
+                            onPressed: () =>
+                                _showAddFromContactsDialog(context, ref, group),
+                            icon: const Icon(Icons.contacts, size: 16),
+                            label: const Text('Contacts'),
+                          ),
+                          TextButton.icon(
+                            onPressed: () =>
+                                _showAddMemberDialog(context, ref, group),
+                            icon: const Icon(Icons.person_add, size: 16),
+                            label: const Text('Add'),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -70,7 +88,8 @@ class _MemberScreenState extends ConsumerState<MemberScreen> {
               return _MemberTile(
                 member: member,
                 groupId: widget.groupId,
-                onRemove: group != null
+                // No remove option for pool fund
+                onRemove: (!isPoolFund && group != null)
                     ? () => _removeMember(context, ref, member, group)
                     : null,
               );
@@ -83,13 +102,14 @@ class _MemberScreenState extends ConsumerState<MemberScreen> {
       appBar: AppBar(title: const Text('Members')),
       body: content,
       floatingActionButton: FloatingActionButton(
-        onPressed: () => _showAddMemberDialog(context, ref),
+        onPressed: () => _showAddMemberDialog(context, ref, group),
         child: const Icon(Icons.person_add),
       ),
     );
   }
 
-  void _showAddMemberDialog(BuildContext context, WidgetRef ref) {
+  void _showAddMemberDialog(
+      BuildContext context, WidgetRef ref, GroupModel? group) {
     final nameController = TextEditingController();
     final emailController = TextEditingController();
     final phoneController = TextEditingController();
@@ -118,11 +138,21 @@ class _MemberScreenState extends ConsumerState<MemberScreen> {
                   TextFormField(
                     controller: emailController,
                     decoration: const InputDecoration(
-                      labelText: 'Email (recommended)',
+                      labelText: 'Email *',
                       hintText: 'member@example.com',
-                      helperText: 'They need this email to see the group',
+                      helperText:
+                          'Required — they register with this email to see all history',
                     ),
                     keyboardType: TextInputType.emailAddress,
+                    validator: (v) {
+                      if (v == null || v.trim().isEmpty) {
+                        return 'Email is required';
+                      }
+                      if (!v.trim().contains('@')) {
+                        return 'Enter a valid email';
+                      }
+                      return null;
+                    },
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
@@ -181,13 +211,11 @@ class _MemberScreenState extends ConsumerState<MemberScreen> {
                 bool needsInvite = false;
 
                 if (email.isNotEmpty) {
-                  // Look up by email first
                   final existing =
                       await FirestoreService.instance.getMemberByEmail(email);
                   if (existing != null) {
                     memberId = existing.id;
                   } else {
-                    // Not registered yet — create placeholder
                     memberId = const Uuid().v4();
                     await FirestoreService.instance.saveMember(MemberModel(
                       id: memberId,
@@ -200,25 +228,59 @@ class _MemberScreenState extends ConsumerState<MemberScreen> {
                     needsInvite = true;
                   }
                 } else {
-                  // No email — offline member
                   memberId = const Uuid().v4();
                   await FirestoreService.instance.saveMember(MemberModel(
                     id: memberId,
                     name: name,
+                    email: '',
                     phone: phoneController.text.trim(),
                     colorHex: selectedColor,
                     createdAt: DateTime.now(),
                   ));
                 }
 
+                // Save to contacts
+                await FirestoreService.instance.saveUserContact(MemberModel(
+                  id: memberId,
+                  name: name,
+                  email: email,
+                  phone: phoneController.text.trim(),
+                  colorHex: selectedColor,
+                  createdAt: DateTime.now(),
+                ));
+
                 // Add to group
-                final group = ref.read(groupByIdProvider(widget.groupId));
-                if (group != null &&
-                    !group.memberIds.contains(memberId)) {
-                  await ref.read(groupProvider.notifier).updateGroup(
-                        group.copyWith(
-                            memberIds: [...group.memberIds, memberId]),
-                      );
+                final currentGroup =
+                    ref.read(groupByIdProvider(widget.groupId));
+                if (currentGroup != null &&
+                    !currentGroup.memberIds.contains(memberId)) {
+                  final updatedEmails = email.isNotEmpty &&
+                          !currentGroup.memberEmails.contains(email)
+                      ? [...currentGroup.memberEmails, email]
+                      : currentGroup.memberEmails;
+
+                  GroupModel updatedGroup = currentGroup.copyWith(
+                    memberIds: [...currentGroup.memberIds, memberId],
+                    memberEmails: updatedEmails,
+                  );
+
+                  if (currentGroup.type == AppConstants.poolFund) {
+                    final now = DateTime.now();
+                    final monthKey =
+                        '${now.year}-${now.month.toString().padLeft(2, '0')}';
+                    if (currentGroup.poolContributionClosedMonths
+                        .contains(monthKey)) {
+                      final newClosedMonths = List<String>.from(
+                          currentGroup.poolContributionClosedMonths)
+                        ..remove(monthKey);
+                      updatedGroup = updatedGroup.copyWith(
+                          poolContributionClosedMonths: newClosedMonths);
+                    }
+                  }
+
+                  await ref
+                      .read(groupProvider.notifier)
+                      .updateGroup(updatedGroup);
                 }
 
                 // Send invite if new unregistered member
@@ -236,6 +298,13 @@ class _MemberScreenState extends ConsumerState<MemberScreen> {
                     inviterName: myProfile.name,
                   );
                 }
+
+                // Show pool fund new member contribution prompt
+                if (context.mounted &&
+                    group?.type == AppConstants.poolFund) {
+                  await _showPoolNewMemberPrompt(
+                      context, ref, name, memberId);
+                }
               },
               child: const Text('Add'),
             ),
@@ -245,21 +314,194 @@ class _MemberScreenState extends ConsumerState<MemberScreen> {
     );
   }
 
+  /// Shows a prompt offering to add the same contribution amount as existing
+  /// pool fund members have contributed this month.
+  Future<void> _showPoolNewMemberPrompt(
+      BuildContext context, WidgetRef ref, String memberName, String memberId) async {
+    final now = DateTime.now();
+    final allContribs = ref
+        .read(contributionsByGroupProvider(widget.groupId))
+        .where((c) =>
+            c.date.year == now.year &&
+            c.date.month == now.month &&
+            c.memberId != memberId)
+        .toList();
+
+    double typicalAmount = 0;
+    if (allContribs.isNotEmpty) {
+      final Map<String, double> memberTotals = {};
+      for (final c in allContribs) {
+        memberTotals[c.memberId] = (memberTotals[c.memberId] ?? 0) + c.amount;
+      }
+      if (memberTotals.isNotEmpty) {
+        final freq = <double, int>{};
+        for (final v in memberTotals.values) {
+          freq[v] = (freq[v] ?? 0) + 1;
+        }
+        typicalAmount =
+            freq.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
+      }
+    }
+
+    await showDialog(
+      context: context,
+      builder: (alertCtx) => AlertDialog(
+        title: const Row(children: [
+          Icon(Icons.person_add, color: Color(0xFF00897B)),
+          SizedBox(width: 8),
+          Text('Member Added'),
+        ]),
+        content: typicalAmount > 0
+            ? Text(
+                '$memberName has been added to the pool fund.\n\n'
+                'Other members contributed ${Helpers.formatCurrency(typicalAmount)} this month.\n\n'
+                'Add the same amount for $memberName?',
+              )
+            : Text(
+                '$memberName has been added to the pool fund.\n\n'
+                'Add a contribution for $memberName when ready.\n\n'
+                'Click "Close Contribution" to lock contributions for this month.',
+              ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(alertCtx).pop(),
+            child: Text(typicalAmount > 0 ? 'Skip' : 'Got it'),
+          ),
+          if (typicalAmount > 0)
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00897B),
+                  foregroundColor: Colors.white),
+              onPressed: () async {
+                Navigator.of(alertCtx).pop();
+                await FirestoreService.instance.saveContribution(
+                  ContributionModel(
+                    id: const Uuid().v4(),
+                    groupId: widget.groupId,
+                    memberId: memberId,
+                    amount: typicalAmount,
+                    date: DateTime.now(),
+                    note: 'Initial contribution',
+                  ),
+                );
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    content: Text(
+                        '✅ ${Helpers.formatCurrency(typicalAmount)} added for $memberName'),
+                    backgroundColor: const Color(0xFF00897B),
+                  ));
+                }
+              },
+              child: Text(
+                  'Add ${Helpers.formatCurrency(typicalAmount)}'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Shows the contacts picker and adds selected contacts to the group.
+  void _showAddFromContactsDialog(
+      BuildContext context, WidgetRef ref, GroupModel? group) {
+    final existingMembers = ref.read(membersByGroupProvider(widget.groupId));
+    final existingEmails = existingMembers
+        .where((m) => m.email.isNotEmpty)
+        .map((m) => m.email)
+        .toList();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => ContactsPickerDialog(
+        excludeEmails: existingEmails,
+        onSelected: (contacts) async {
+          int addedCount = 0;
+          for (final contact in contacts) {
+            final email = contact.email.toLowerCase();
+            String memberId;
+
+            final existing =
+                await FirestoreService.instance.getMemberByEmail(email);
+            if (existing != null) {
+              memberId = existing.id;
+            } else {
+              memberId = const Uuid().v4();
+              await FirestoreService.instance.saveMember(MemberModel(
+                id: memberId,
+                name: contact.name,
+                email: email,
+                phone: contact.phone,
+                colorHex: contact.colorHex,
+                createdAt: DateTime.now(),
+              ));
+            }
+
+            final currentGroup =
+                ref.read(groupByIdProvider(widget.groupId));
+            if (currentGroup != null &&
+                !currentGroup.memberIds.contains(memberId)) {
+              final updatedEmails = email.isNotEmpty &&
+                      !currentGroup.memberEmails.contains(email)
+                  ? [...currentGroup.memberEmails, email]
+                  : currentGroup.memberEmails;
+
+              GroupModel updatedGroup = currentGroup.copyWith(
+                memberIds: [...currentGroup.memberIds, memberId],
+                memberEmails: updatedEmails,
+              );
+
+              if (currentGroup.type == AppConstants.poolFund) {
+                final now = DateTime.now();
+                final monthKey =
+                    '${now.year}-${now.month.toString().padLeft(2, '0')}';
+                if (currentGroup.poolContributionClosedMonths
+                    .contains(monthKey)) {
+                  final newClosed = List<String>.from(
+                      currentGroup.poolContributionClosedMonths)
+                    ..remove(monthKey);
+                  updatedGroup = updatedGroup.copyWith(
+                      poolContributionClosedMonths: newClosed);
+                }
+              }
+
+              await ref
+                  .read(groupProvider.notifier)
+                  .updateGroup(updatedGroup);
+              addedCount++;
+
+              // Pool fund contribution prompt for each added member
+              if (context.mounted &&
+                  group?.type == AppConstants.poolFund) {
+                await _showPoolNewMemberPrompt(
+                    context, ref, contact.name, memberId);
+              }
+            }
+          }
+
+          if (context.mounted && addedCount > 0) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(
+                  '$addedCount member(s) added from contacts'),
+            ));
+          }
+        },
+      ),
+    );
+  }
+
   Future<void> _removeMember(BuildContext context, WidgetRef ref,
-      MemberModel member, group) async {
+      MemberModel member, GroupModel group) async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Remove Member'),
-        content:
-            Text('Remove ${member.name} from this group?'),
+        content: Text('Remove ${member.name} from this group?'),
         actions: [
           TextButton(
               onPressed: () => Navigator.of(ctx).pop(false),
               child: const Text('Cancel')),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red),
+            style:
+                ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () => Navigator.of(ctx).pop(true),
             child: const Text('Remove'),
           ),
@@ -344,5 +586,3 @@ class _MemberTile extends ConsumerWidget {
     );
   }
 }
-
-

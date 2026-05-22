@@ -14,6 +14,7 @@ import '../providers/auth_provider.dart';
 import '../services/firestore_service.dart';
 import '../services/invite_service.dart';
 import '../utils/constants.dart';
+import '../widgets/contacts_picker_dialog.dart';
 
 class AddGroupScreen extends ConsumerStatefulWidget {
   const AddGroupScreen({super.key});
@@ -50,6 +51,46 @@ class _AddGroupScreenState extends ConsumerState<AddGroupScreen> {
               colorHex: colorHex,
               initialAmount: 0,
             ));
+          });
+          // Save to contacts
+          if (email.isNotEmpty) {
+            FirestoreService.instance.saveUserContact(MemberModel(
+              id: const Uuid().v4(),
+              name: name,
+              email: email,
+              phone: phone,
+              colorHex: colorHex,
+              createdAt: DateTime.now(),
+            ));
+          }
+        },
+      ),
+    );
+  }
+
+  void _addFromContacts() {
+    final existingEmails = _members
+        .where((m) => m.email.isNotEmpty)
+        .map((m) => m.email)
+        .toList();
+    showDialog(
+      context: context,
+      builder: (ctx) => ContactsPickerDialog(
+        excludeEmails: existingEmails,
+        onSelected: (contacts) {
+          setState(() {
+            for (final c in contacts) {
+              if (!_members.any(
+                  (m) => m.email == c.email && c.email.isNotEmpty)) {
+                _members.add(_TempMember(
+                  name: c.name,
+                  email: c.email,
+                  phone: c.phone,
+                  colorHex: c.colorHex,
+                  initialAmount: 0,
+                ));
+              }
+            }
           });
         },
       ),
@@ -93,18 +134,21 @@ class _AddGroupScreenState extends ConsumerState<AddGroupScreen> {
             await FirestoreService.instance.getMemberByEmail(tm.email);
         if (existing != null) {
           if (!memberIds.contains(existing.id)) memberIds.add(existing.id);
-          // Already registered — no invite needed
+          // Save to contacts
+          await FirestoreService.instance.saveUserContact(existing);
         } else {
           // Not registered yet — create placeholder & queue invite
           final memberId = uuid.v4();
-          await FirestoreService.instance.saveMember(MemberModel(
+          final member = MemberModel(
             id: memberId,
             name: tm.name,
             email: tm.email.toLowerCase(),
             phone: tm.phone,
             colorHex: tm.colorHex,
             createdAt: DateTime.now(),
-          ));
+          );
+          await FirestoreService.instance.saveMember(member);
+          await FirestoreService.instance.saveUserContact(member);
           memberIds.add(memberId);
           membersToInvite.add(tm); // send invite email
         }
@@ -343,10 +387,20 @@ class _AddGroupScreenState extends ConsumerState<AddGroupScreen> {
               children: [
                 Text('Members (${_members.length})',
                     style: theme.textTheme.titleSmall),
-                TextButton.icon(
-                  onPressed: _addMember,
-                  icon: const Icon(Icons.person_add, size: 16),
-                  label: const Text('Add Member'),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextButton.icon(
+                      onPressed: _addFromContacts,
+                      icon: const Icon(Icons.contacts, size: 16),
+                      label: const Text('Contacts'),
+                    ),
+                    TextButton.icon(
+                      onPressed: _addMember,
+                      icon: const Icon(Icons.person_add, size: 16),
+                      label: const Text('Add'),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -413,6 +467,7 @@ class _AddGroupScreenState extends ConsumerState<AddGroupScreen> {
         return '';
     }
   }
+
 }
 
 class _TempMember {
@@ -470,7 +525,8 @@ class _MemberTile extends StatelessWidget {
               radius: 18,
               child: Text(
                 member.name.isNotEmpty ? member.name[0].toUpperCase() : '?',
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                style: const TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.bold),
               ),
             ),
             const SizedBox(width: 12),
@@ -480,9 +536,14 @@ class _MemberTile extends StatelessWidget {
                 children: [
                   Text(member.name,
                       style: const TextStyle(fontWeight: FontWeight.w600)),
+                  if (member.email.isNotEmpty)
+                    Text(member.email,
+                        style:
+                            TextStyle(fontSize: 11, color: Colors.grey[600])),
                   if (member.phone.isNotEmpty)
                     Text(member.phone,
-                        style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                        style:
+                            TextStyle(fontSize: 12, color: Colors.grey[600])),
                   if (showAmountField) ...[
                     const SizedBox(height: 8),
                     TextFormField(
@@ -514,7 +575,8 @@ class _MemberTile extends StatelessWidget {
 }
 
 class _AddMemberDialog extends StatefulWidget {
-  final Function(String name, String email, String phone, String colorHex) onAdd;
+  final Function(String name, String email, String phone, String colorHex)
+      onAdd;
 
   const _AddMemberDialog({required this.onAdd});
 
@@ -543,60 +605,74 @@ class _AddMemberDialogState extends State<_AddMemberDialog> {
       title: const Text('Add Member'),
       content: Form(
         key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextFormField(
-              controller: _nameController,
-              decoration: const InputDecoration(labelText: 'Name'),
-              textCapitalization: TextCapitalization.words,
-              validator: (v) =>
-                  v == null || v.trim().isEmpty ? 'Enter name' : null,
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _emailController,
-              decoration: const InputDecoration(
-                labelText: 'Email (optional)',
-                hintText: 'member@example.com',
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: _nameController,
+                decoration: const InputDecoration(labelText: 'Name'),
+                textCapitalization: TextCapitalization.words,
+                validator: (v) =>
+                    v == null || v.trim().isEmpty ? 'Enter name' : null,
               ),
-              keyboardType: TextInputType.emailAddress,
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _phoneController,
-              decoration: const InputDecoration(labelText: 'Phone (optional)'),
-              keyboardType: TextInputType.phone,
-            ),
-            const SizedBox(height: 12),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text('Avatar Color',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: AppConstants.avatarColors.map((hex) {
-                final color = AppConstants.colorFromHex(hex);
-                return GestureDetector(
-                  onTap: () => setState(() => _selectedColor = hex),
-                  child: Container(
-                    width: 32,
-                    height: 32,
-                    decoration: BoxDecoration(
-                      color: color,
-                      shape: BoxShape.circle,
-                      border: _selectedColor == hex
-                          ? Border.all(color: Colors.black, width: 2)
-                          : null,
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _emailController,
+                decoration: const InputDecoration(
+                  labelText: 'Email *',
+                  hintText: 'member@example.com',
+                  helperText:
+                      'Required — they register with this email to see all history',
+                ),
+                keyboardType: TextInputType.emailAddress,
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) {
+                    return 'Email is required';
+                  }
+                  if (!v.trim().contains('@')) {
+                    return 'Enter a valid email';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _phoneController,
+                decoration: const InputDecoration(
+                    labelText: 'Phone (optional)'),
+                keyboardType: TextInputType.phone,
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Avatar Color',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: AppConstants.avatarColors.map((hex) {
+                  final color = AppConstants.colorFromHex(hex);
+                  return GestureDetector(
+                    onTap: () => setState(() => _selectedColor = hex),
+                    child: Container(
+                      width: 32,
+                      height: 32,
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                        border: _selectedColor == hex
+                            ? Border.all(color: Colors.black, width: 2)
+                            : null,
+                      ),
                     ),
-                  ),
-                );
-              }).toList(),
-            ),
-          ],
+                  );
+                }).toList(),
+              ),
+            ],
+          ),
         ),
       ),
       actions: [
@@ -622,8 +698,4 @@ class _AddMemberDialogState extends State<_AddMemberDialog> {
     );
   }
 }
-
-
-
-
 

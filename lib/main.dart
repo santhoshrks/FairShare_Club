@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:go_router/go_router.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
 
 import 'models/expense_model.dart';
@@ -17,6 +18,7 @@ import 'screens/login_screen.dart';
 import 'screens/register_screen.dart';
 import 'providers/group_provider.dart';
 import 'providers/auth_provider.dart';
+import 'services/firestore_service.dart';
 import 'services/notification_service.dart';
 import 'utils/constants.dart';
 import 'utils/theme.dart';
@@ -149,6 +151,7 @@ class _AuthGate extends ConsumerStatefulWidget {
 
 class _AuthGateState extends ConsumerState<_AuthGate> {
   bool _showLogin = true;
+  bool _invitesLinked = false; // run once per app session
 
   @override
   Widget build(BuildContext context) {
@@ -163,6 +166,17 @@ class _AuthGateState extends ConsumerState<_AuthGate> {
       ),
       data: (user) {
         if (user != null) {
+          // Ensure pending invites are linked every time the user is active
+          if (!_invitesLinked) {
+            _invitesLinked = true;
+            // Profile creation + invite linking (fire-and-forget)
+            FirestoreService.instance.getOrCreateCurrentUserProfile(
+              name: user.displayName ??
+                  user.email?.split('@').first ??
+                  'User',
+              colorHex: AppConstants.avatarColors[0],
+            );
+          }
           // Logged in — show main app via router
           return MaterialApp.router(
             title: 'FairShare Club',
@@ -173,7 +187,9 @@ class _AuthGateState extends ConsumerState<_AuthGate> {
             routerConfig: _router,
           );
         }
-        // Not logged in — wrap auth screens in MaterialApp
+        // Not logged in — reset so next login re-runs the link
+        _invitesLinked = false;
+        // Wrap auth screens in MaterialApp
         return MaterialApp(
           title: 'FairShare Club',
           debugShowCheckedModeBanner: false,

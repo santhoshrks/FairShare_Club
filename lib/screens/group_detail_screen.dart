@@ -1,16 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:intl/intl.dart';
+import '../models/contribution_model.dart';
 import '../models/group_model.dart';
 import '../models/member_model.dart';
 import '../models/expense_model.dart';
 import '../providers/group_provider.dart';
 import '../providers/expense_provider.dart';
+import '../providers/pool_provider.dart';
 import '../providers/auth_provider.dart';
 import '../services/firestore_service.dart';
 import '../services/invite_service.dart';
 import '../utils/constants.dart';
 import '../utils/helpers.dart';
+import '../widgets/contacts_picker_dialog.dart';
 import '../widgets/member_avatar.dart';
 import '../screens/expense_split_screen.dart';
 import '../screens/pool_fund_screen.dart';
@@ -94,6 +98,14 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
                       if (context.mounted) {
                         _showAddMemberFromDetail(context);
                       }
+                    } else if (value == 'add_from_contacts') {
+                      _tabController.animateTo(2);
+                      setState(() => _currentTab = 2);
+                      await Future.delayed(
+                          const Duration(milliseconds: 300));
+                      if (context.mounted) {
+                        _showAddFromContactsFromDetail(context);
+                      }
                     } else if (value == 'archive') {
                         await ref
                             .read(groupProvider.notifier)
@@ -118,6 +130,13 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
                           Icon(Icons.person_add, size: 18),
                           SizedBox(width: 8),
                           Text('Add Member'),
+                        ])),
+                    const PopupMenuItem(
+                        value: 'add_from_contacts',
+                        child: Row(children: [
+                          Icon(Icons.contacts, size: 18),
+                          SizedBox(width: 8),
+                          Text('Add from Contacts'),
                         ])),
                     const PopupMenuItem(
                         value: 'archive', child: Text('Archive Group')),
@@ -204,19 +223,25 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
           ],
         ),
       ),
-      floatingActionButton: _currentTab == 2
-          // Members tab → Add Member FAB
-          ? FloatingActionButton.extended(
-              onPressed: () => _showAddMemberFromDetail(context),
-              icon: const Icon(Icons.person_add),
-              label: const Text('Add Member'),
-            )
-          // Expenses / Dashboard tab → Add Expense FAB
-          : FloatingActionButton(
-              onPressed: () =>
-                  context.push('/group/${widget.groupId}/add-expense'),
-              child: const Icon(Icons.add),
-            ),
+      floatingActionButton: () {
+        // Pool Fund: no FAB at all — pool fund has its own inline action
+        // buttons and members can be added via the member list's own button.
+        if (group.type == AppConstants.poolFund) return null;
+        // Members tab (non-pool-fund groups): Add Member FAB
+        if (_currentTab == 2) {
+          return FloatingActionButton.extended(
+            onPressed: () => _showAddMemberFromDetail(context),
+            icon: const Icon(Icons.person_add),
+            label: const Text('Add Member'),
+          );
+        }
+        // All other groups on non-Members tabs: Add Expense FAB
+        return FloatingActionButton(
+          onPressed: () =>
+              context.push('/group/${widget.groupId}/add-expense'),
+          child: const Icon(Icons.add),
+        );
+      }(),
     );
   }
 
@@ -266,11 +291,21 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
                   TextFormField(
                     controller: emailController,
                     decoration: const InputDecoration(
-                      labelText: 'Email (recommended)',
+                      labelText: 'Email *',
                       hintText: 'member@example.com',
-                      helperText: 'They register with this email to see the group',
+                      helperText:
+                          'Required — they register with this email to see all history',
                     ),
                     keyboardType: TextInputType.emailAddress,
+                    validator: (v) {
+                      if (v == null || v.trim().isEmpty) {
+                        return 'Email is required';
+                      }
+                      if (!v.trim().contains('@')) {
+                        return 'Enter a valid email';
+                      }
+                      return null;
+                    },
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
@@ -354,20 +389,54 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
                   await FirestoreService.instance.saveMember(MemberModel(
                     id: memberId,
                     name: name,
+                    email: '',
                     phone: phoneController.text.trim(),
                     colorHex: selectedColor,
                     createdAt: DateTime.now(),
                   ));
                 }
 
+                // Save to contacts
+                await FirestoreService.instance.saveUserContact(MemberModel(
+                  id: memberId,
+                  name: name,
+                  email: email,
+                  phone: phoneController.text.trim(),
+                  colorHex: selectedColor,
+                  createdAt: DateTime.now(),
+                ));
+
                 final group =
                     ref.read(groupByIdProvider(widget.groupId));
                 if (group != null &&
                     !group.memberIds.contains(memberId)) {
-                  await ref.read(groupProvider.notifier).updateGroup(
-                        group.copyWith(
-                            memberIds: [...group.memberIds, memberId]),
-                      );
+                  final updatedEmails = email.isNotEmpty &&
+                          !group.memberEmails.contains(email)
+                      ? [...group.memberEmails, email]
+                      : group.memberEmails;
+
+                  GroupModel updatedGroup = group.copyWith(
+                    memberIds: [...group.memberIds, memberId],
+                    memberEmails: updatedEmails,
+                  );
+
+                  if (group.type == AppConstants.poolFund) {
+                    final now = DateTime.now();
+                    final monthKey =
+                        '${now.year}-${now.month.toString().padLeft(2, '0')}';
+                    if (group.poolContributionClosedMonths
+                        .contains(monthKey)) {
+                      final newClosed = List<String>.from(
+                          group.poolContributionClosedMonths)
+                        ..remove(monthKey);
+                      updatedGroup = updatedGroup.copyWith(
+                          poolContributionClosedMonths: newClosed);
+                    }
+                  }
+
+                  await ref
+                      .read(groupProvider.notifier)
+                      .updateGroup(updatedGroup);
                 }
 
                 if (needsInvite && context.mounted) {
@@ -384,11 +453,190 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
                     inviterName: myProfile.name,
                   );
                 }
+
+                // Show pool fund new member contribution prompt
+                if (context.mounted &&
+                    group?.type == AppConstants.poolFund) {
+                  await _showPoolNewMemberPromptDetail(
+                      context, name, memberId);
+                }
               },
               child: const Text('Add'),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// Pool fund contribution prompt — offers to add the same amount as existing members.
+  Future<void> _showPoolNewMemberPromptDetail(
+      BuildContext context, String memberName, String memberId) async {
+    final now = DateTime.now();
+    final allContribs = ref
+        .read(contributionsByGroupProvider(widget.groupId))
+        .where((c) =>
+            c.date.year == now.year &&
+            c.date.month == now.month &&
+            c.memberId != memberId)
+        .toList();
+
+    double typicalAmount = 0;
+    if (allContribs.isNotEmpty) {
+      final Map<String, double> memberTotals = {};
+      for (final c in allContribs) {
+        memberTotals[c.memberId] = (memberTotals[c.memberId] ?? 0) + c.amount;
+      }
+      if (memberTotals.isNotEmpty) {
+        final freq = <double, int>{};
+        for (final v in memberTotals.values) {
+          freq[v] = (freq[v] ?? 0) + 1;
+        }
+        typicalAmount =
+            freq.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
+      }
+    }
+
+    await showDialog(
+      context: context,
+      builder: (alertCtx) => AlertDialog(
+        title: const Row(children: [
+          Icon(Icons.person_add, color: Color(0xFF00897B)),
+          SizedBox(width: 8),
+          Text('Member Added'),
+        ]),
+        content: typicalAmount > 0
+            ? Text(
+                '$memberName has been added to the pool fund.\n\n'
+                'Other members contributed ${Helpers.formatCurrency(typicalAmount)} this month.\n\n'
+                'Add the same amount for $memberName?',
+              )
+            : Text(
+                '$memberName has been added to the pool fund.\n\n'
+                'Add a contribution for $memberName when ready.\n\n'
+                'Click "Close Contribution" to lock contributions for this month.',
+              ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(alertCtx).pop(),
+            child: Text(typicalAmount > 0 ? 'Skip' : 'Got it'),
+          ),
+          if (typicalAmount > 0)
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00897B),
+                  foregroundColor: Colors.white),
+              onPressed: () async {
+                Navigator.of(alertCtx).pop();
+                await FirestoreService.instance.saveContribution(
+                  ContributionModel(
+                    id: const Uuid().v4(),
+                    groupId: widget.groupId,
+                    memberId: memberId,
+                    amount: typicalAmount,
+                    date: DateTime.now(),
+                    note: 'Initial contribution',
+                  ),
+                );
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    content: Text(
+                        '✅ ${Helpers.formatCurrency(typicalAmount)} added for $memberName'),
+                    backgroundColor: const Color(0xFF00897B),
+                  ));
+                }
+              },
+              child: Text('Add ${Helpers.formatCurrency(typicalAmount)}'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Shows the contacts picker and adds selected contacts to the group.
+  void _showAddFromContactsFromDetail(BuildContext context) {
+    final existingMembers = ref.read(membersByGroupProvider(widget.groupId));
+    final existingEmails = existingMembers
+        .where((m) => m.email.isNotEmpty)
+        .map((m) => m.email)
+        .toList();
+    final group = ref.read(groupByIdProvider(widget.groupId));
+
+    showDialog(
+      context: context,
+      builder: (ctx) => ContactsPickerDialog(
+        excludeEmails: existingEmails,
+        onSelected: (contacts) async {
+          int addedCount = 0;
+          for (final contact in contacts) {
+            final email = contact.email.toLowerCase();
+            String memberId;
+
+            final existing =
+                await FirestoreService.instance.getMemberByEmail(email);
+            if (existing != null) {
+              memberId = existing.id;
+            } else {
+              memberId = const Uuid().v4();
+              await FirestoreService.instance.saveMember(MemberModel(
+                id: memberId,
+                name: contact.name,
+                email: email,
+                phone: contact.phone,
+                colorHex: contact.colorHex,
+                createdAt: DateTime.now(),
+              ));
+            }
+
+            final currentGroup =
+                ref.read(groupByIdProvider(widget.groupId));
+            if (currentGroup != null &&
+                !currentGroup.memberIds.contains(memberId)) {
+              final updatedEmails = email.isNotEmpty &&
+                      !currentGroup.memberEmails.contains(email)
+                  ? [...currentGroup.memberEmails, email]
+                  : currentGroup.memberEmails;
+
+              GroupModel updatedGroup = currentGroup.copyWith(
+                memberIds: [...currentGroup.memberIds, memberId],
+                memberEmails: updatedEmails,
+              );
+
+              if (currentGroup.type == AppConstants.poolFund) {
+                final now = DateTime.now();
+                final monthKey =
+                    '${now.year}-${now.month.toString().padLeft(2, '0')}';
+                if (currentGroup.poolContributionClosedMonths
+                    .contains(monthKey)) {
+                  final newClosed = List<String>.from(
+                      currentGroup.poolContributionClosedMonths)
+                    ..remove(monthKey);
+                  updatedGroup = updatedGroup.copyWith(
+                      poolContributionClosedMonths: newClosed);
+                }
+              }
+
+              await ref
+                  .read(groupProvider.notifier)
+                  .updateGroup(updatedGroup);
+              addedCount++;
+
+              // Pool fund contribution prompt for each contact added
+              if (context.mounted &&
+                  group?.type == AppConstants.poolFund) {
+                await _showPoolNewMemberPromptDetail(
+                    context, contact.name, memberId);
+              }
+            }
+          }
+
+          if (context.mounted && addedCount > 0) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content:
+                  Text('$addedCount member(s) added from contacts'),
+            ));
+          }
+        },
       ),
     );
   }
@@ -411,10 +659,21 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
                 backgroundColor: Colors.red),
             onPressed: () async {
               Navigator.of(ctx).pop();
-              await ref
-                  .read(groupProvider.notifier)
-                  .deleteGroup(group.id);
-              if (context.mounted) context.go('/');
+              try {
+                await ref
+                    .read(groupProvider.notifier)
+                    .deleteGroup(group.id);
+                if (context.mounted) context.go('/');
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Failed to delete group: $e'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              }
             },
             child: const Text('Delete'),
           ),
@@ -434,10 +693,34 @@ class _ExpensesTab extends ConsumerStatefulWidget {
 
 class _ExpensesTabState extends ConsumerState<_ExpensesTab> {
   String? _filterCategory;
+  bool _showOverall = false;
+
+  static final _kMinMonth = DateTime(2026, 1);
+  DateTime _selectedMonth = () {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month);
+  }();
+
+  DateTime get _maxMonth {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month);
+  }
+
+  String _fmtMonth(DateTime dt) => DateFormat('MMM yyyy').format(dt);
 
   @override
   Widget build(BuildContext context) {
-    var expenses = ref.watch(expensesByGroupProvider(widget.groupId));
+    List<ExpenseModel> expenses;
+    if (_showOverall) {
+      expenses = ref.watch(expensesByGroupProvider(widget.groupId));
+    } else {
+      final p = GroupMonthParam(
+          groupId: widget.groupId,
+          year: _selectedMonth.year,
+          month: _selectedMonth.month);
+      expenses = ref.watch(expensesByGroupMonthProvider(p));
+    }
+
     final members = ref.watch(membersByGroupProvider(widget.groupId));
 
     if (_filterCategory != null) {
@@ -447,6 +730,91 @@ class _ExpensesTabState extends ConsumerState<_ExpensesTab> {
 
     return Column(
       children: [
+        // Month selector + Overall toggle row
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: Row(
+            children: [
+              Expanded(
+                child: _showOverall
+                    ? Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF00897B).withAlpha(20),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          'Overall — All Time',
+                          style: TextStyle(
+                              fontSize: 13,
+                              color: Color(0xFF00897B),
+                              fontWeight: FontWeight.w500),
+                        ),
+                      )
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.chevron_left, size: 20),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            onPressed: (_selectedMonth.isAfter(_kMinMonth) ||
+                                    (_selectedMonth.year ==
+                                            _kMinMonth.year &&
+                                        _selectedMonth.month >
+                                            _kMinMonth.month))
+                                ? () => setState(() => _selectedMonth =
+                                    DateTime(_selectedMonth.year,
+                                        _selectedMonth.month - 1))
+                                : null,
+                            color: (_selectedMonth.isAfter(_kMinMonth) ||
+                                    (_selectedMonth.year ==
+                                            _kMinMonth.year &&
+                                        _selectedMonth.month >
+                                            _kMinMonth.month))
+                                ? const Color(0xFF00897B)
+                                : Colors.grey[300],
+                          ),
+                          Text(
+                            _fmtMonth(_selectedMonth),
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 13),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.chevron_right,
+                                size: 20),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            onPressed: (_selectedMonth.year ==
+                                        _maxMonth.year &&
+                                    _selectedMonth.month ==
+                                        _maxMonth.month)
+                                ? null
+                                : () => setState(() => _selectedMonth =
+                                    DateTime(_selectedMonth.year,
+                                        _selectedMonth.month + 1)),
+                            color: (_selectedMonth.year == _maxMonth.year &&
+                                    _selectedMonth.month ==
+                                        _maxMonth.month)
+                                ? Colors.grey[300]
+                                : const Color(0xFF00897B),
+                          ),
+                        ],
+                      ),
+              ),
+              TextButton(
+                onPressed: () =>
+                    setState(() => _showOverall = !_showOverall),
+                child: Text(
+                  _showOverall ? 'Monthly' : 'Overall',
+                  style: const TextStyle(color: Color(0xFF00897B)),
+                ),
+              ),
+            ],
+          ),
+        ),
         SizedBox(
           height: 50,
           child: ListView(
@@ -461,8 +829,29 @@ class _ExpensesTabState extends ConsumerState<_ExpensesTab> {
         Expanded(
           child: expenses.isEmpty
               ? Center(
-                  child: Text('No expenses',
-                      style: TextStyle(color: Colors.grey[600])),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.inbox_outlined,
+                          size: 56, color: Colors.grey[400]),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Nothing is here',
+                        style: TextStyle(
+                            color: Colors.grey[600],
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _showOverall
+                            ? 'No expenses recorded yet'
+                            : 'No expenses for this month',
+                        style: TextStyle(
+                            color: Colors.grey[500], fontSize: 13),
+                      ),
+                    ],
+                  ),
                 )
               : ListView.builder(
                   padding: const EdgeInsets.all(12),
@@ -527,10 +916,10 @@ class _SimpleExpenseTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final payer = members.firstWhereOrNull(
         (m) => m.id == expense.paidByMemberId);
-    final catColor = AppConstants.categoryColor(expense.category as String);
+    final catColor = AppConstants.categoryColor(expense.category);
 
     return Dismissible(
-      key: Key(expense.id as String),
+      key: Key(expense.id),
       direction: DismissDirection.endToStart,
       background: Container(
         alignment: Alignment.centerRight,
@@ -553,20 +942,20 @@ class _SimpleExpenseTile extends StatelessWidget {
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(
-                AppConstants.categoryIcon(expense.category as String),
+                AppConstants.categoryIcon(expense.category),
                 color: catColor,
                 size: 20),
           ),
-          title: Text(expense.description as String,
+          title: Text(expense.description,
               style: const TextStyle(fontWeight: FontWeight.w500),
               maxLines: 1,
               overflow: TextOverflow.ellipsis),
           subtitle: Text(
-            '${payer?.name ?? 'Unknown'} • ${Helpers.formatDateShort(expense.date as DateTime)}',
+            '${payer?.name ?? 'Unknown'} • ${Helpers.formatDateShort(expense.date)}',
             style: const TextStyle(fontSize: 12),
           ),
           trailing: Text(
-            Helpers.formatCurrency(expense.amount as double),
+            Helpers.formatCurrency(expense.amount),
             style: const TextStyle(
                 fontWeight: FontWeight.bold,
                 color: Color(0xFF00897B),

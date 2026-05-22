@@ -18,20 +18,26 @@ class BalanceCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isPositive = balance >= 0;
-    final color = isPositive ? const Color(0xFF43A047) : const Color(0xFFE53935);
-    final bgColor = isPositive
-        ? const Color(0xFF43A047).withAlpha(15)
-        : const Color(0xFFE53935).withAlpha(15);
+    final isSettled = balance.abs() < 0.01;
+    final isPositive = balance > 0.01;
+    final color = isSettled
+        ? Colors.grey
+        : isPositive
+            ? const Color(0xFF43A047)
+            : const Color(0xFFE53935);
+    final bgColor = isSettled
+        ? Colors.grey.withAlpha(20)
+        : isPositive
+            ? const Color(0xFF43A047).withAlpha(15)
+            : const Color(0xFFE53935).withAlpha(15);
+    final label = isSettled ? 'Settled' : isPositive ? 'Gets back' : 'Owes';
 
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          border: Border(
-            left: BorderSide(color: color, width: 4),
-          ),
+          border: Border(left: BorderSide(color: color, width: 4)),
         ),
         child: Row(
           children: [
@@ -54,13 +60,14 @@ class BalanceCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
                       color: bgColor,
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: Text(
-                      isPositive ? 'Gets back' : 'Owes',
+                      label,
                       style: TextStyle(
                         fontSize: 11,
                         color: color,
@@ -75,18 +82,22 @@ class BalanceCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  (balance >= 0 ? '+' : '') + Helpers.formatCurrency(balance.abs()),
+                  isSettled
+                      ? Helpers.formatCurrency(0)
+                      : (isPositive ? '+' : '') +
+                          Helpers.formatCurrency(balance.abs()),
                   style: theme.textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.bold,
                     color: color,
                   ),
                 ),
-                if (!isPositive && onSettleUp != null) ...[
+                if (!isSettled && !isPositive && onSettleUp != null) ...[
                   const SizedBox(height: 4),
                   GestureDetector(
                     onTap: onSettleUp,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
                         color: const Color(0xFF00897B),
                         borderRadius: BorderRadius.circular(20),
@@ -110,4 +121,3 @@ class BalanceCard extends StatelessWidget {
     );
   }
 }
-

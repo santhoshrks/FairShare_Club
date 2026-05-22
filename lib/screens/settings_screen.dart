@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-
 import 'package:firebase_auth/firebase_auth.dart';
 import '../providers/group_provider.dart';
 import '../providers/auth_provider.dart';
+import '../services/firestore_service.dart';
 import '../services/notification_service.dart';
 import '../utils/constants.dart';
 
@@ -233,16 +233,46 @@ class SettingsScreen extends ConsumerWidget {
                 ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () async {
               Navigator.of(ctx).pop();
-              await Hive.box(AppConstants.groupsBox).clear();
-              await Hive.box(AppConstants.membersBox).clear();
-              await Hive.box(AppConstants.expensesBox).clear();
-              await Hive.box(AppConstants.contributionsBox).clear();
-              await Hive.box(AppConstants.walletTransactionsBox).clear();
-              ref.read(groupProvider.notifier).refresh();
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('All data cleared')),
-                );
+              try {
+                // Show loading indicator
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Row(children: [
+                        SizedBox(
+                          width: 16, height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        ),
+                        SizedBox(width: 12),
+                        Text('Deleting all data...'),
+                      ]),
+                      duration: Duration(seconds: 10),
+                    ),
+                  );
+                }
+                // Delete from Firestore (real database)
+                await FirestoreService.instance.clearAllUserData();
+                // Also clear Hive local cache just in case
+                await Hive.box(AppConstants.groupsBox).clear();
+                await Hive.box(AppConstants.membersBox).clear();
+                await Hive.box(AppConstants.expensesBox).clear();
+                await Hive.box(AppConstants.contributionsBox).clear();
+                await Hive.box(AppConstants.walletTransactionsBox).clear();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                        content: Text('✅ All data deleted successfully')),
+                  );
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Error: $e')),
+                  );
+                }
               }
             },
             child: const Text('Clear All'),

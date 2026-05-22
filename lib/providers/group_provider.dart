@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/group_model.dart';
 import '../services/firestore_service.dart';
@@ -9,17 +10,38 @@ final hiveServiceProvider = Provider<HiveService>((ref) => HiveService());
 
 // ─── Groups (real-time Firestore stream) ─────────────────────────────────────
 class GroupNotifier extends StateNotifier<List<GroupModel>> {
+  bool _disposed = false;
+
   GroupNotifier() : super([]) {
-    _subscription = FirestoreService.instance.groupsStream().listen((groups) {
-      state = groups;
+    // React to every auth change so the stream always belongs to the current user
+    _authSub = FirebaseAuth.instance.authStateChanges().listen((user) async {
+      _groupSub?.cancel();
+      _groupSub = null;
+      if (user != null) {
+        // Link any pending invites FIRST (e.g. added to group after registration)
+        // This is non-blocking for the stream — invites update Firestore, and the
+        // real-time stream below will pick them up automatically.
+        FirestoreService.instance.linkPendingInvites().catchError((_) {});
+
+        if (_disposed) return;
+        _groupSub =
+            FirestoreService.instance.groupsStream().listen((groups) {
+          if (!_disposed) state = groups;
+        });
+      } else {
+        if (!_disposed) state = [];
+      }
     });
   }
 
-  StreamSubscription<List<GroupModel>>? _subscription;
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<List<GroupModel>>? _groupSub;
 
   @override
   void dispose() {
-    _subscription?.cancel();
+    _disposed = true;
+    _authSub?.cancel();
+    _groupSub?.cancel();
     super.dispose();
   }
 
