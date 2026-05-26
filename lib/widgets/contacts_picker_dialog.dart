@@ -36,7 +36,7 @@ class _ContactsPickerDialogState extends ConsumerState<ContactsPickerDialog> {
         children: [
           Icon(Icons.contacts, color: Color(0xFF00897B)),
           SizedBox(width: 8),
-          Text('Choose from Contacts'),
+          Text('Saved Contacts'),
         ],
       ),
       content: SizedBox(
@@ -53,7 +53,8 @@ class _ContactsPickerDialogState extends ConsumerState<ContactsPickerDialog> {
                 .where((c) =>
                     _search.isEmpty ||
                     c.name.toLowerCase().contains(_search.toLowerCase()) ||
-                    c.email.toLowerCase().contains(_search.toLowerCase()))
+                    c.email.toLowerCase().contains(_search.toLowerCase()) ||
+                    c.phone.toLowerCase().contains(_search.toLowerCase()))
                 .toList();
 
             if (allContacts.isEmpty) {
@@ -65,7 +66,7 @@ class _ContactsPickerDialogState extends ConsumerState<ContactsPickerDialog> {
                     Icon(Icons.person_search, size: 48, color: Colors.grey),
                     SizedBox(height: 12),
                     Text(
-                      'No contacts yet.\nAdd members to a group to save them as contacts.',
+                      'No saved contacts yet.\nWhen you add someone with a name and email, they will appear here automatically.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.grey),
                     ),
@@ -79,7 +80,7 @@ class _ContactsPickerDialogState extends ConsumerState<ContactsPickerDialog> {
               children: [
                 TextField(
                   decoration: const InputDecoration(
-                    hintText: 'Search contacts…',
+                    hintText: 'Search saved contacts…',
                     prefixIcon: Icon(Icons.search, size: 18),
                     isDense: true,
                   ),

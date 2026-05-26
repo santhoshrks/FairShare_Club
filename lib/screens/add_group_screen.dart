@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:uuid/uuid.dart';
@@ -7,9 +8,6 @@ import '../models/member_model.dart';
 import '../models/contribution_model.dart';
 import '../models/wallet_transaction_model.dart';
 import '../providers/group_provider.dart';
-import '../providers/expense_provider.dart';
-import '../providers/pool_provider.dart';
-import '../providers/wallet_provider.dart';
 import '../providers/auth_provider.dart';
 import '../services/firestore_service.dart';
 import '../services/invite_service.dart';
@@ -38,31 +36,99 @@ class _AddGroupScreenState extends ConsumerState<AddGroupScreen> {
     super.dispose();
   }
 
+  String _normalizeEmail(String email) => email.trim().toLowerCase();
+
+  String _memberKey({
+    required String name,
+    required String email,
+    required String phone,
+  }) {
+    final normalizedEmail = _normalizeEmail(email);
+    if (normalizedEmail.isNotEmpty) return 'email:$normalizedEmail';
+    return 'name:${name.trim().toLowerCase()}|phone:${phone.trim()}';
+  }
+
+  void _showMessage(String message, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: isError ? Colors.red : null,
+      ),
+    );
+  }
+
+  Future<void> _saveContactIfEligible({
+    required String name,
+    required String email,
+    required String phone,
+    required String colorHex,
+  }) async {
+    final normalizedEmail = _normalizeEmail(email);
+    if (normalizedEmail.isEmpty) return;
+
+    await FirestoreService.instance.saveUserContact(
+      MemberModel(
+        id: const Uuid().v4(),
+        name: name.trim(),
+        email: normalizedEmail,
+        phone: phone.trim(),
+        colorHex: colorHex,
+        createdAt: DateTime.now(),
+      ),
+    );
+  }
+
   void _addMember() {
     showDialog(
       context: context,
       builder: (ctx) => _AddMemberDialog(
-        onAdd: (name, email, phone, colorHex) {
+        onAdd: (name, email, phone, colorHex) async {
+          final normalizedEmail = _normalizeEmail(email);
+          final memberKey = _memberKey(
+            name: name,
+            email: normalizedEmail,
+            phone: phone,
+          );
+
+          if (_members.any((member) =>
+              _memberKey(
+                name: member.name,
+                email: member.email,
+                phone: member.phone,
+              ) ==
+              memberKey)) {
+            _showMessage('This member is already added.', isError: true);
+            return false;
+          }
+
           setState(() {
             _members.add(_TempMember(
-              name: name,
-              email: email,
+              name: name.trim(),
+              email: normalizedEmail,
               phone: phone,
               colorHex: colorHex,
               initialAmount: 0,
             ));
           });
-          // Save to contacts
-          if (email.isNotEmpty) {
-            FirestoreService.instance.saveUserContact(MemberModel(
-              id: const Uuid().v4(),
+
+          try {
+            await _saveContactIfEligible(
               name: name,
-              email: email,
+              email: normalizedEmail,
               phone: phone,
               colorHex: colorHex,
-              createdAt: DateTime.now(),
-            ));
+            );
+          } catch (_) {
+            if (mounted) {
+              _showMessage(
+                'Member added, but contact could not be saved right now.',
+                isError: true,
+              );
+            }
           }
+
+          return true;
         },
       ),
     );
@@ -70,28 +136,51 @@ class _AddGroupScreenState extends ConsumerState<AddGroupScreen> {
 
   void _addFromContacts() {
     final existingEmails = _members
-        .where((m) => m.email.isNotEmpty)
-        .map((m) => m.email)
+        .map((member) => _normalizeEmail(member.email))
+        .where((email) => email.isNotEmpty)
         .toList();
+
     showDialog(
       context: context,
       builder: (ctx) => ContactsPickerDialog(
         excludeEmails: existingEmails,
         onSelected: (contacts) {
+          int addedCount = 0;
           setState(() {
             for (final c in contacts) {
-              if (!_members.any(
-                  (m) => m.email == c.email && c.email.isNotEmpty)) {
+              final normalizedEmail = _normalizeEmail(c.email);
+              final contactKey = _memberKey(
+                name: c.name,
+                email: normalizedEmail,
+                phone: c.phone,
+              );
+
+              final alreadyExists = _members.any(
+                (member) =>
+                    _memberKey(
+                      name: member.name,
+                      email: member.email,
+                      phone: member.phone,
+                    ) ==
+                    contactKey,
+              );
+
+              if (!alreadyExists) {
                 _members.add(_TempMember(
                   name: c.name,
-                  email: c.email,
+                  email: normalizedEmail,
                   phone: c.phone,
                   colorHex: c.colorHex,
                   initialAmount: 0,
                 ));
+                addedCount++;
               }
             }
           });
+
+          if (addedCount > 0) {
+            _showMessage('$addedCount contact(s) added');
+          }
         },
       ),
     );
@@ -106,127 +195,176 @@ class _AddGroupScreenState extends ConsumerState<AddGroupScreen> {
       return;
     }
 
+    final currentUser = ref.read(currentUserProvider);
+    if (currentUser == null) {
+      _showMessage('Not signed in. Please sign out and sign back in.',
+          isError: true);
+      return;
+    }
+
     setState(() => _isLoading = true);
 
-    final currentUser = ref.read(currentUserProvider);
-    final uuid = const Uuid();
-    final groupId = uuid.v4();
-    final memberIds = <String>[];
-    // Track members who are NOT registered yet — to send invites
-    final List<_TempMember> membersToInvite = [];
-    String inviterName = 'Someone';
+    try {
+      const uuid = Uuid();
+      final groupId = uuid.v4();
+      final memberIds = <String>[];
+      final memberEmails = <String>[];
+      final resolvedMemberIds = <String>[];
+      final List<_TempMember> membersToInvite = [];
+      String inviterName =
+          currentUser.displayName ?? currentUser.email ?? 'Me';
 
-    // Auto-add the current logged-in user as first member
-    if (currentUser != null) {
-      final myProfile =
-          await FirestoreService.instance.getOrCreateCurrentUserProfile(
-        name: currentUser.displayName ?? currentUser.email ?? 'Me',
-        colorHex: AppConstants.avatarColors[0],
-      );
-      memberIds.add(myProfile.id);
-      inviterName = myProfile.name;
-    }
+      // Profile creation + invite-linking is best-effort; fall back to UID.
+      try {
+        final myProfile =
+            await FirestoreService.instance.getOrCreateCurrentUserProfile(
+          name: currentUser.displayName ?? currentUser.email ?? 'Me',
+          colorHex: AppConstants.avatarColors[0],
+        );
+        memberIds.add(myProfile.id);
+        inviterName = myProfile.name;
+      } catch (e) {
+        debugPrint('[CreateGroup] getOrCreateCurrentUserProfile failed: $e');
+        // Fall back to the Firebase Auth UID so the creator is still a member.
+        memberIds.add(currentUser.uid);
+      }
 
-    // Add each invited member by email lookup
-    for (final tm in _members) {
-      if (tm.email.isNotEmpty) {
-        final existing =
-            await FirestoreService.instance.getMemberByEmail(tm.email);
-        if (existing != null) {
-          if (!memberIds.contains(existing.id)) memberIds.add(existing.id);
-          // Save to contacts
-          await FirestoreService.instance.saveUserContact(existing);
+      for (final tm in _members) {
+        final normalizedEmail = _normalizeEmail(tm.email);
+
+        if (normalizedEmail.isNotEmpty) {
+          final existing =
+              await FirestoreService.instance.getMemberByEmail(normalizedEmail);
+
+          if (existing != null) {
+            if (!memberIds.contains(existing.id)) {
+              memberIds.add(existing.id);
+            }
+
+            resolvedMemberIds.add(existing.id);
+
+            if (!memberEmails.contains(normalizedEmail)) {
+              memberEmails.add(normalizedEmail);
+            }
+
+            // Contact save is best-effort — must not block group creation.
+            try {
+              await FirestoreService.instance.saveUserContact(
+                existing.copyWith(
+                  name: tm.name,
+                  phone: tm.phone,
+                  colorHex: tm.colorHex,
+                ),
+              );
+            } catch (e) {
+              debugPrint('[CreateGroup] saveUserContact (existing) failed: $e');
+            }
+          } else {
+            final memberId = uuid.v4();
+            final member = MemberModel(
+              id: memberId,
+              name: tm.name,
+              email: normalizedEmail,
+              phone: tm.phone,
+              colorHex: tm.colorHex,
+              createdAt: DateTime.now(),
+            );
+            await FirestoreService.instance.saveMember(member);
+            // Contact save is best-effort.
+            try {
+              await FirestoreService.instance.saveUserContact(member);
+            } catch (e) {
+              debugPrint('[CreateGroup] saveUserContact (new) failed: $e');
+            }
+            memberIds.add(memberId);
+            memberEmails.add(normalizedEmail);
+            resolvedMemberIds.add(memberId);
+            membersToInvite.add(tm);
+          }
         } else {
-          // Not registered yet — create placeholder & queue invite
           final memberId = uuid.v4();
-          final member = MemberModel(
-            id: memberId,
-            name: tm.name,
-            email: tm.email.toLowerCase(),
-            phone: tm.phone,
-            colorHex: tm.colorHex,
-            createdAt: DateTime.now(),
+          await FirestoreService.instance.saveMember(
+            MemberModel(
+              id: memberId,
+              name: tm.name,
+              phone: tm.phone,
+              colorHex: tm.colorHex,
+              createdAt: DateTime.now(),
+            ),
           );
-          await FirestoreService.instance.saveMember(member);
-          await FirestoreService.instance.saveUserContact(member);
           memberIds.add(memberId);
-          membersToInvite.add(tm); // send invite email
-        }
-      } else {
-        // No email — create offline member
-        final memberId = uuid.v4();
-        await FirestoreService.instance.saveMember(MemberModel(
-          id: memberId,
-          name: tm.name,
-          phone: tm.phone,
-          colorHex: tm.colorHex,
-          createdAt: DateTime.now(),
-        ));
-        memberIds.add(memberId);
-      }
-    }
-
-    final group = GroupModel(
-      id: groupId,
-      name: _nameController.text.trim(),
-      type: _selectedType,
-      memberIds: memberIds,
-      createdAt: DateTime.now(),
-      description: _descController.text.trim(),
-    );
-
-    await ref.read(groupProvider.notifier).addGroup(group);
-
-    // Handle initial amounts for pool/wallet
-    if (_selectedType == AppConstants.poolFund) {
-      for (int i = 0; i < _members.length; i++) {
-        final amount = _members[i].initialAmount;
-        // offset by 1 if current user was auto-added
-        final idx = currentUser != null ? i + 1 : i;
-        if (idx < memberIds.length && amount > 0) {
-          await FirestoreService.instance.saveContribution(
-            ContributionModel(
-              id: uuid.v4(),
-              groupId: groupId,
-              memberId: memberIds[idx],
-              amount: amount,
-              date: DateTime.now(),
-              note: 'Initial contribution',
-            ),
-          );
+          resolvedMemberIds.add(memberId);
         }
       }
-    } else if (_selectedType == AppConstants.walletSplit) {
-      for (int i = 0; i < _members.length; i++) {
-        final amount = _members[i].initialAmount;
-        final idx = currentUser != null ? i + 1 : i;
-        if (idx < memberIds.length && amount > 0) {
-          await FirestoreService.instance.saveWalletTransaction(
-            WalletTransactionModel(
-              id: uuid.v4(),
-              groupId: groupId,
-              memberId: memberIds[idx],
-              amount: amount,
-              type: AppConstants.credit,
-              description: 'Initial wallet balance',
-              date: DateTime.now(),
-            ),
-          );
+
+      final group = GroupModel(
+        id: groupId,
+        name: _nameController.text.trim(),
+        type: _selectedType,
+        memberIds: memberIds,
+        memberEmails: memberEmails,
+        createdAt: DateTime.now(),
+        description: _descController.text.trim(),
+      );
+
+      await ref.read(groupProvider.notifier).addGroup(group);
+
+      if (_selectedType == AppConstants.poolFund) {
+        for (int i = 0; i < _members.length; i++) {
+          final amount = _members[i].initialAmount;
+          if (i < resolvedMemberIds.length && amount > 0) {
+            await FirestoreService.instance.saveContribution(
+              ContributionModel(
+                id: uuid.v4(),
+                groupId: groupId,
+                memberId: resolvedMemberIds[i],
+                amount: amount,
+                date: DateTime.now(),
+                note: 'Initial contribution',
+              ),
+            );
+          }
+        }
+      } else if (_selectedType == AppConstants.walletSplit) {
+        for (int i = 0; i < _members.length; i++) {
+          final amount = _members[i].initialAmount;
+          if (i < resolvedMemberIds.length && amount > 0) {
+            await FirestoreService.instance.saveWalletTransaction(
+              WalletTransactionModel(
+                id: uuid.v4(),
+                groupId: groupId,
+                memberId: resolvedMemberIds[i],
+                amount: amount,
+                type: AppConstants.credit,
+                description: 'Initial wallet balance',
+                date: DateTime.now(),
+              ),
+            );
+          }
         }
       }
+
+      if (!mounted) return;
+
+      if (membersToInvite.isNotEmpty) {
+        final groupName = _nameController.text.trim();
+        await _showInviteDialog(
+          context,
+          membersToInvite,
+          groupName,
+          inviterName,
+        );
+      }
+
+      if (mounted) context.go('/group/$groupId');
+    } catch (error, stack) {
+      debugPrint('[CreateGroup] Error: $error\n$stack');
+      _showMessage('Could not create group. Please try again.', isError: true);
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
-
-    setState(() => _isLoading = false);
-    if (!mounted) return;
-
-    // Send invite emails to unregistered members
-    if (membersToInvite.isNotEmpty) {
-      final groupName = _nameController.text.trim();
-      await _showInviteDialog(
-          context, membersToInvite, groupName, inviterName);
-    }
-
-    if (mounted) context.go('/group/$groupId');
   }
 
   Future<void> _showInviteDialog(
@@ -575,7 +713,12 @@ class _MemberTile extends StatelessWidget {
 }
 
 class _AddMemberDialog extends StatefulWidget {
-  final Function(String name, String email, String phone, String colorHex)
+  final Future<bool> Function(
+    String name,
+    String email,
+    String phone,
+    String colorHex,
+  )
       onAdd;
 
   const _AddMemberDialog({required this.onAdd});
@@ -590,6 +733,7 @@ class _AddMemberDialogState extends State<_AddMemberDialog> {
   final _phoneController = TextEditingController();
   String _selectedColor = AppConstants.avatarColors[0];
   final _formKey = GlobalKey<FormState>();
+  bool _isSaving = false;
 
   @override
   void dispose() {
@@ -677,22 +821,37 @@ class _AddMemberDialogState extends State<_AddMemberDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.of(context).pop(),
+          onPressed: _isSaving ? null : () => Navigator.of(context).pop(),
           child: const Text('Cancel'),
         ),
         ElevatedButton(
-          onPressed: () {
+          onPressed: _isSaving
+              ? null
+              : () async {
+            final navigator = Navigator.of(context);
             if (_formKey.currentState!.validate()) {
-              widget.onAdd(
+              setState(() => _isSaving = true);
+              final added = await widget.onAdd(
                 _nameController.text.trim(),
                 _emailController.text.trim(),
                 _phoneController.text.trim(),
                 _selectedColor,
               );
-              Navigator.of(context).pop();
+              if (mounted) {
+                setState(() => _isSaving = false);
+                if (added) {
+                  navigator.pop();
+                }
+              }
             }
           },
-          child: const Text('Add'),
+          child: _isSaving
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Add'),
         ),
       ],
     );

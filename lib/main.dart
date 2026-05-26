@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:go_router/go_router.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
 
 import 'models/expense_model.dart';
@@ -153,6 +152,21 @@ class _AuthGateState extends ConsumerState<_AuthGate> {
   bool _showLogin = true;
   bool _invitesLinked = false; // run once per app session
 
+  /// Creates (or loads) the current user's member profile and links any
+  /// pending group invites.  Resets [_invitesLinked] on failure so the
+  /// next build cycle will retry automatically.
+  Future<void> _initUserProfile(String displayName) async {
+    try {
+      await FirestoreService.instance.getOrCreateCurrentUserProfile(
+        name: displayName,
+        colorHex: AppConstants.avatarColors[0],
+      );
+    } catch (e) {
+      debugPrint('[AuthGate] getOrCreateCurrentUserProfile failed: $e');
+      if (mounted) setState(() => _invitesLinked = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final authState = ref.watch(authStateProvider);
@@ -169,12 +183,9 @@ class _AuthGateState extends ConsumerState<_AuthGate> {
           // Ensure pending invites are linked every time the user is active
           if (!_invitesLinked) {
             _invitesLinked = true;
-            // Profile creation + invite linking (fire-and-forget)
-            FirestoreService.instance.getOrCreateCurrentUserProfile(
-              name: user.displayName ??
-                  user.email?.split('@').first ??
-                  'User',
-              colorHex: AppConstants.avatarColors[0],
+            // Profile creation + invite linking — best-effort with retry.
+            _initUserProfile(
+              user.displayName ?? user.email?.split('@').first ?? 'User',
             );
           }
           // Logged in — show main app via router

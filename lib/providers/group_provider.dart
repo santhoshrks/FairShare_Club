@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/group_model.dart';
 import '../services/firestore_service.dart';
@@ -11,8 +12,20 @@ final hiveServiceProvider = Provider<HiveService>((ref) => HiveService());
 // ─── Groups (real-time Firestore stream) ─────────────────────────────────────
 class GroupNotifier extends StateNotifier<List<GroupModel>> {
   bool _disposed = false;
+  AppLifecycleListener? _lifecycleListener;
 
   GroupNotifier() : super([]) {
+    // Re-trigger invite linking whenever the app comes to the foreground.
+    // This covers the case where another user added the current user to a new
+    // group while this app was in the background or offline.
+    _lifecycleListener = AppLifecycleListener(
+      onResume: () {
+        if (!_disposed) {
+          FirestoreService.instance.linkPendingInvites().catchError((_) {});
+        }
+      },
+    );
+
     // React to every auth change so the stream always belongs to the current user
     _authSub = FirebaseAuth.instance.authStateChanges().listen((user) async {
       _groupSub?.cancel();
@@ -27,6 +40,9 @@ class GroupNotifier extends StateNotifier<List<GroupModel>> {
         _groupSub =
             FirestoreService.instance.groupsStream().listen((groups) {
           if (!_disposed) state = groups;
+        }, onError: (_) {
+          // byUid stream error — Firestore will reconnect automatically;
+          // avoid crashing the notifier.
         });
       } else {
         if (!_disposed) state = [];
@@ -40,6 +56,7 @@ class GroupNotifier extends StateNotifier<List<GroupModel>> {
   @override
   void dispose() {
     _disposed = true;
+    _lifecycleListener?.dispose();
     _authSub?.cancel();
     _groupSub?.cancel();
     super.dispose();
@@ -70,7 +87,12 @@ class GroupNotifier extends StateNotifier<List<GroupModel>> {
     }
   }
 
-  void refresh() {} // no-op: Firestore stream auto-updates
+  /// Manually re-triggers pending-invite linking.
+  /// Used as a pull-to-refresh action so the user can force a sync when
+  /// another user has added them to a group recently.
+  void refresh() {
+    FirestoreService.instance.linkPendingInvites().catchError((_) {});
+  }
 }
 
 final groupProvider =

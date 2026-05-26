@@ -1,21 +1,32 @@
 rules_version = '2';
+// ──────────────────────────────────────────────────────────────────────────────
+// IMPORTANT: Deploy these rules to Firebase before testing cross-device sync:
+//   firebase deploy --only firestore:rules
+// ──────────────────────────────────────────────────────────────────────────────
 service cloud.firestore {
   match /databases/{database}/documents {
 
     // Members: any logged-in user can read all members (for email lookup)
     match /members/{memberId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null;
+      allow read, write: if request.auth != null;
     }
 
-    // Groups: accessible by UID (existing member) OR by email (invited member)
+    // Groups: accessible by UID (existing member) OR by email (invited member).
+    // The `list` rule mirrors `read` so that collection queries like
+    //   .where('memberEmails', arrayContains: email)
+    // work correctly for invited-but-not-yet-registered users.
     match /groups/{groupId} {
+      allow create: if request.auth != null;
       allow read, write: if request.auth != null && (
         request.auth.uid in resource.data.memberIds ||
         (request.auth.token.email != null &&
           request.auth.token.email in resource.data.memberEmails)
       );
-      allow create: if request.auth != null;
+    }
+
+    // Per-user saved contacts used by the in-app contacts picker.
+    match /user_contacts/{uid}/contacts/{contactId} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
     }
 
     // Expenses: only accessible if user is a member of the group

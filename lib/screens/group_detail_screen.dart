@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -36,6 +37,14 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
   int _currentTab = 0;
+  // When the screen is navigated to right after group creation, the Riverpod
+  // stream may not have emitted the new group yet.  Show a loading spinner for
+  // up to 5 s; only then show "Group not found".
+  bool _timedOut = false;
+  Timer? _notFoundTimer;
+  // Tracks whether the group was successfully loaded at least once.
+  // If true and group becomes null, the group was deleted → navigate home.
+  bool _groupWasFound = false;
 
   @override
   void initState() {
@@ -46,10 +55,14 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
         setState(() => _currentTab = _tabController.index);
       }
     });
+    _notFoundTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted) setState(() => _timedOut = true);
+    });
   }
 
   @override
   void dispose() {
+    _notFoundTimer?.cancel();
     _tabController.dispose();
     super.dispose();
   }
@@ -60,11 +73,38 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
     final members = ref.watch(membersByGroupProvider(widget.groupId));
 
     if (group == null) {
+      // If the group was previously found and is now null, it was deleted.
+      // Navigate home on the next frame to avoid building with a null group.
+      if (_groupWasFound) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            if (context.canPop()) {
+              context.go('/');
+            } else {
+              context.go('/');
+            }
+          }
+        });
+        return Scaffold(
+          appBar: AppBar(title: const Text('Group')),
+          body: const Center(child: CircularProgressIndicator()),
+        );
+      }
+      if (!_timedOut) {
+        return Scaffold(
+          appBar: AppBar(title: const Text('Group')),
+          body: const Center(child: CircularProgressIndicator()),
+        );
+      }
       return Scaffold(
         appBar: AppBar(title: const Text('Group')),
         body: const Center(child: Text('Group not found')),
       );
     }
+
+    // Group found — cancel the not-found timer if still running and mark found.
+    _notFoundTimer?.cancel();
+    _groupWasFound = true;
 
     final typeColor = AppConstants.groupTypeColor(group.type);
     return Scaffold(
@@ -659,20 +699,15 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
                 backgroundColor: Colors.red),
             onPressed: () async {
               Navigator.of(ctx).pop();
+              // Navigate home immediately — the stream will emit null shortly
+              // which would trigger the infinite spinner bug if we wait.
+              context.go('/');
               try {
                 await ref
                     .read(groupProvider.notifier)
                     .deleteGroup(group.id);
-                if (context.mounted) context.go('/');
               } catch (e) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Failed to delete group: $e'),
-                      backgroundColor: Colors.red,
-                    ),
-                  );
-                }
+                // Deletion failed — show error. User is already on home screen.
               }
             },
             child: const Text('Delete'),

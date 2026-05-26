@@ -49,11 +49,14 @@ class FirestoreService {
     }
 
     // Stream 2: groups where the user's email is in memberEmails
-    // (covers invited-but-not-yet-migrated members)
+    // (covers invited-but-not-yet-migrated members).
+    // Wrapped with handleError so a permissions failure on this secondary
+    // stream does not error-out the whole merged stream.
     final byEmail = _groups
         .where('memberEmails', arrayContains: email)
         .snapshots()
-        .map((s) => s.docs.map((d) => GroupModel.fromJson(d.data())).toList());
+        .map((s) => s.docs.map((d) => GroupModel.fromJson(d.data())).toList())
+        .handleError((_) {/* permission error — fall back to byUid only */});
 
     // Merge both streams, deduplicate by group id
     return _mergeGroupStreams(byUid, byEmail);
@@ -63,7 +66,7 @@ class FirestoreService {
     Stream<List<GroupModel>> a,
     Stream<List<GroupModel>> b,
   ) {
-    final controller = StreamController<List<GroupModel>>();
+    final controller = StreamController<List<GroupModel>>.broadcast();
     List<GroupModel> latestA = [];
     List<GroupModel> latestB = [];
 
@@ -76,10 +79,25 @@ class FirestoreService {
     }
 
     StreamSubscription? subA, subB;
-    subA = a.listen((list) { latestA = list; emit(); },
-        onError: controller.addError);
-    subB = b.listen((list) { latestB = list; emit(); },
-        onError: controller.addError);
+
+    // byUid stream — critical path; propagate errors so GroupNotifier can react.
+    subA = a.listen(
+      (list) { latestA = list; emit(); },
+      onError: controller.addError,
+      cancelOnError: false,
+    );
+
+    // byEmail stream — best-effort; a permission error here must NOT break the
+    // merged stream (groups visible via byUid are still shown).
+    subB = b.listen(
+      (list) { latestB = list; emit(); },
+      onError: (Object e) {
+        // Swallow: byEmail query can fail when Firestore rules haven't been
+        // deployed yet or when the user has no email.  The byUid stream is
+        // sufficient for registered members.
+      },
+      cancelOnError: false,
+    );
 
     controller.onCancel = () {
       subA?.cancel();
@@ -416,11 +434,16 @@ class FirestoreService {
       _db.collection('user_contacts').doc(uid).collection('contacts');
 
   /// Save/update a member as a contact for the currently signed-in user.
+  /// Only contacts with a valid email are persisted — the email is used as the
+  /// document key so the same person is never duplicated.
   Future<void> saveUserContact(MemberModel contact) async {
     final uid = currentUid;
     if (uid == null) return;
-    final docId = contact.email.isNotEmpty ? contact.email : contact.id;
-    await _contactsCol(uid).doc(docId).set(contact.toJson());
+    final normalizedEmail = contact.email.trim().toLowerCase();
+    // Require a valid email — contacts without one cannot be de-duplicated.
+    if (normalizedEmail.isEmpty || !normalizedEmail.contains('@')) return;
+    final normalizedContact = contact.copyWith(email: normalizedEmail);
+    await _contactsCol(uid).doc(normalizedEmail).set(normalizedContact.toJson());
   }
 
   /// Real-time stream of the current user's saved contacts, sorted by name.

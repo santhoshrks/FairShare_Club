@@ -19,8 +19,16 @@ class HomeScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
-      body: CustomScrollView(
-        slivers: [
+      body: RefreshIndicator(
+        onRefresh: () async {
+          // Re-check for pending group invites (e.g. added to a group by
+          // another user while this device was offline / in background).
+          ref.read(groupProvider.notifier).refresh();
+          await Future.delayed(const Duration(milliseconds: 800));
+        },
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
           SliverAppBar(
             expandedHeight: 120,
             floating: true,
@@ -108,7 +116,8 @@ class HomeScreen extends ConsumerWidget {
             const SliverToBoxAdapter(child: SizedBox(height: 100)),
           ],
         ],
-      ),
+        ),  // CustomScrollView
+      ),    // RefreshIndicator
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => context.push('/add-group'),
         icon: const Icon(Icons.add),
