@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:intl/intl.dart';
 import '../models/group_model.dart';
+import '../providers/auth_provider.dart';
 import '../providers/group_provider.dart';
 import '../providers/expense_provider.dart';
 import '../utils/constants.dart';
@@ -16,48 +18,105 @@ class HomeScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final groups = ref.watch(activeGroupsProvider);
     final theme = Theme.of(context);
+    final currentUser = ref.watch(currentUserProvider);
+    final allMembers = ref.watch(memberProvider);
+
+    // Resolve display name: prefer Firestore member profile, fall back to
+    // Firebase Auth displayName, then email prefix, then empty string.
+    final memberProfile = currentUser != null
+        ? allMembers.firstWhereOrNull((m) => m.id == currentUser.uid)
+        : null;
+    final rawName = memberProfile?.name.isNotEmpty == true
+        ? memberProfile!.name
+        : (currentUser?.displayName?.isNotEmpty == true
+            ? currentUser!.displayName!
+            : (currentUser?.email?.split('@').first ?? ''));
+    final displayName = rawName.isNotEmpty
+        ? rawName[0].toUpperCase() + rawName.substring(1)
+        : '';
+
+    // Time-of-day greeting
+    final hour = DateTime.now().hour;
+    final greeting = hour < 12
+        ? 'Good morning'
+        : hour < 17
+            ? 'Good afternoon'
+            : 'Good evening';
+
+    // "Sunday, 25 May 2026"
+    final now = DateTime.now();
+    final dayName = DateFormat('EEEE').format(now);   // e.g. Sunday
+    final dateStr = DateFormat('d MMMM y').format(now); // e.g. 25 May 2026
 
     return Scaffold(
       backgroundColor: theme.scaffoldBackgroundColor,
       body: RefreshIndicator(
         onRefresh: () async {
-          // Re-check for pending group invites (e.g. added to a group by
-          // another user while this device was offline / in background).
           ref.read(groupProvider.notifier).refresh();
           await Future.delayed(const Duration(milliseconds: 800));
         },
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
-          SliverAppBar(
-            expandedHeight: 120,
-            floating: true,
-            pinned: true,
-            backgroundColor: const Color(0xFF00897B),
-            flexibleSpace: FlexibleSpaceBar(
-              titlePadding: const EdgeInsets.only(left: 16, bottom: 16),
-              title: Row(
+            SliverAppBar(
+              pinned: true,
+              floating: true,
+              backgroundColor: const Color(0xFF00897B),
+              toolbarHeight: 80,
+              titleSpacing: 16,
+              title: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.account_balance_wallet,
-                      color: Colors.white, size: 24),
-                  const SizedBox(width: 8),
-                  Text(
-                    'FairShare Club',
-                    style: theme.textTheme.headlineSmall?.copyWith(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
+                  // Day + date row
+                  Row(
+                    children: [
+                      const Icon(Icons.calendar_today,
+                          color: Colors.white70, size: 12),
+                      const SizedBox(width: 4),
+                      Text(
+                        '$dayName, $dateStr',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w400,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  // Greeting + name
+                  RichText(
+                    text: TextSpan(
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 19,
+                        fontWeight: FontWeight.bold,
+                        height: 1.2,
+                      ),
+                      children: [
+                        TextSpan(text: '$greeting${displayName.isNotEmpty ? ", " : ""}'),
+                        if (displayName.isNotEmpty)
+                          TextSpan(
+                            text: displayName,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        const TextSpan(text: ' 👋'),
+                      ],
                     ),
                   ),
                 ],
               ),
+              actions: [
+                IconButton(
+                  onPressed: () => context.push('/settings'),
+                  icon: const Icon(Icons.settings_outlined, color: Colors.white),
+                ),
+              ],
             ),
-            actions: [
-              IconButton(
-                onPressed: () => context.push('/settings'),
-                icon: const Icon(Icons.settings_outlined, color: Colors.white),
-              ),
-            ],
-          ),
           if (groups.isEmpty)
             SliverFillRemaining(
               child: EmptyState(
