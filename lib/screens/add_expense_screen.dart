@@ -117,9 +117,43 @@ class _AddExpenseScreenState extends ConsumerState<AddExpenseScreen> {
       return;
     }
 
-    setState(() => _isLoading = true);
-
     final amount = double.parse(_amountController.text);
+
+    // Validate custom split amounts
+    if (_splitType == AppConstants.customSplit) {
+      final sumCustom = _splitAmongIds.fold(
+          0.0,
+          (s, id) =>
+              s + (double.tryParse(_customControllers[id]?.text ?? '') ?? 0));
+      if ((sumCustom - amount).abs() > 0.01) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              'Custom amounts total ${Helpers.formatCurrency(sumCustom)} must equal expense amount ${Helpers.formatCurrency(amount)}'),
+          backgroundColor: Colors.red.shade600,
+          duration: const Duration(seconds: 4),
+        ));
+        return;
+      }
+    }
+
+    // Validate percentage split
+    if (_splitType == AppConstants.percentageSplit) {
+      final totalPct = _splitAmongIds.fold(
+          0.0,
+          (s, id) =>
+              s + (double.tryParse(_customControllers[id]?.text ?? '') ?? 0));
+      if ((totalPct - 100).abs() > 0.01) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              'Percentages must add up to 100% (current: ${totalPct.toStringAsFixed(1)}%)'),
+          backgroundColor: Colors.red.shade600,
+          duration: const Duration(seconds: 4),
+        ));
+        return;
+      }
+    }
+
+    setState(() => _isLoading = true);
     final customAmounts = <String, double>{};
     if (_splitType != AppConstants.equalSplit) {
       for (final id in _splitAmongIds) {
@@ -542,6 +576,70 @@ class _AddExpenseScreenState extends ConsumerState<AddExpenseScreen> {
                     ],
                   ),
                 );
+              }),
+              // Mismatch warning
+              Builder(builder: (context) {
+                final totalAmount = double.tryParse(_amountController.text) ?? 0;
+                if (_splitType == AppConstants.customSplit) {
+                  final sumCustom = _previewSplit.values.fold(0.0, (s, v) => s + v);
+                  final diff = (sumCustom - totalAmount).abs();
+                  if (diff > 0.01) {
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.red.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.red.shade300),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.warning_amber, color: Colors.red.shade600, size: 16),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                'Total entered: ${Helpers.formatCurrency(sumCustom)} — must equal ${Helpers.formatCurrency(totalAmount)}',
+                                style: TextStyle(color: Colors.red.shade700, fontSize: 12),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }
+                } else if (_splitType == AppConstants.percentageSplit) {
+                  final totalPct = _splitAmongIds.fold(
+                      0.0,
+                      (s, id) =>
+                          s + (double.tryParse(_customControllers[id]?.text ?? '') ?? 0));
+                  if ((totalPct - 100).abs() > 0.01) {
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.red.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.red.shade300),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.warning_amber, color: Colors.red.shade600, size: 16),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                'Percentages total: ${totalPct.toStringAsFixed(1)}% — must equal 100%',
+                                style: TextStyle(color: Colors.red.shade700, fontSize: 12),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }
+                }
+                return const SizedBox.shrink();
               }),
             ],
 

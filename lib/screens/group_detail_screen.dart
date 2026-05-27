@@ -112,7 +112,7 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
         headerSliverBuilder: (context, innerBoxIsScrolled) {
           return [
             SliverAppBar(
-              expandedHeight: 160,
+              expandedHeight: 195,
               pinned: true,
               backgroundColor: typeColor,
               leading: IconButton(
@@ -190,7 +190,7 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
               flexibleSpace: FlexibleSpaceBar(
                 background: Container(
                   color: typeColor,
-                  padding: const EdgeInsets.fromLTRB(16, 80, 16, 16),
+                  padding: const EdgeInsets.fromLTRB(16, 80, 16, 60),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [

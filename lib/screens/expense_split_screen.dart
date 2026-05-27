@@ -25,7 +25,7 @@ class ExpenseSplitScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     return DefaultTabController(
-      length: 3,
+      length: 2,
       child: Column(
         children: [
           Container(
@@ -37,7 +37,6 @@ class ExpenseSplitScreen extends ConsumerWidget {
               tabs: [
                 Tab(text: 'Balances'),
                 Tab(text: 'Payments'),
-                Tab(text: 'Expenses'),
               ],
             ),
           ),
@@ -46,7 +45,6 @@ class ExpenseSplitScreen extends ConsumerWidget {
               children: [
                 _BalancesTab(groupId: groupId),
                 _PaymentsTab(groupId: groupId),
-                _ExpensesTab(groupId: groupId),
               ],
             ),
           ),

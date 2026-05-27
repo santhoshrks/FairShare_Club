@@ -8,6 +8,7 @@ import '../providers/group_provider.dart';
 import '../providers/expense_provider.dart';
 import '../providers/pool_provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/settlement_provider.dart';
 import '../services/firestore_service.dart';
 import '../services/invite_service.dart';
 import '../utils/constants.dart';
@@ -533,7 +534,8 @@ class _MemberTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final expenses = ref.watch(expensesByGroupProvider(groupId));
-    final balances = Helpers.calculateBalances(expenses);
+    final settlements = ref.watch(settlementsByGroupProvider(groupId));
+    final balances = Helpers.calculateBalances(expenses, settlements);
     final balance = balances[member.id] ?? 0;
 
     return Card(

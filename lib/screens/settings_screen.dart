@@ -253,12 +253,12 @@ class SettingsScreen extends ConsumerWidget {
                 }
                 // Delete from Firestore (real database)
                 await FirestoreService.instance.clearAllUserData();
-                // Also clear Hive local cache just in case
-                await Hive.box(AppConstants.groupsBox).clear();
-                await Hive.box(AppConstants.membersBox).clear();
-                await Hive.box(AppConstants.expensesBox).clear();
-                await Hive.box(AppConstants.contributionsBox).clear();
-                await Hive.box(AppConstants.walletTransactionsBox).clear();
+                // Also clear Hive local cache – ignore errors if boxes are not open
+                try { await Hive.box(AppConstants.groupsBox).clear(); } catch (_) {}
+                try { await Hive.box(AppConstants.membersBox).clear(); } catch (_) {}
+                try { await Hive.box(AppConstants.expensesBox).clear(); } catch (_) {}
+                try { await Hive.box(AppConstants.contributionsBox).clear(); } catch (_) {}
+                try { await Hive.box(AppConstants.walletTransactionsBox).clear(); } catch (_) {}
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).hideCurrentSnackBar();
                   ScaffoldMessenger.of(context).showSnackBar(

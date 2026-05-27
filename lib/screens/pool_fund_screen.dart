@@ -50,6 +50,10 @@ class _PoolFundScreenState extends ConsumerState<PoolFundScreen> {
         ref.watch(poolSelectedMonthProvider(widget.groupId));
     final group = ref.watch(groupByIdProvider(widget.groupId));
     final members = ref.watch(membersByGroupProvider(widget.groupId));
+    // Use ALL members (not just group members) for timeline name lookup so that
+    // recently-added members and members removed from the group still display
+    // their names correctly in the transaction history.
+    final allMembers = ref.watch(memberProvider);
 
     final p = GroupMonthParam(
       groupId: widget.groupId,
@@ -339,7 +343,7 @@ class _PoolFundScreenState extends ConsumerState<PoolFundScreen> {
           else
             ...timeline.map((item) => _TimelineItem(
                   item: item,
-                  members: members,
+                  members: allMembers,
                 )),
         ],
 

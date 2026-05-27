@@ -214,10 +214,12 @@ final expensesByGroupMonthProvider =
 });
 
 /// Balances for a group computed from a single month's expenses only.
+/// Settlements (all-time) are included so "paid" amounts are reflected correctly.
 final balancesByGroupMonthProvider =
     Provider.family<Map<String, double>, GroupMonthParam>((ref, p) {
   final expenses = ref.watch(expensesByGroupMonthProvider(p));
-  return Helpers.calculateBalances(expenses);
+  final settlements = ref.watch(settlementsByGroupProvider(p.groupId));
+  return Helpers.calculateBalances(expenses, settlements);
 });
 
 /// Selected month for expense-split/balances view (default = current month).
