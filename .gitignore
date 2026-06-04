@@ -41,3 +41,5 @@ android/key.properties
 ios/Pods/
 ios/.symlinks/
 ios/Flutter/flutter_export_environment.sh
+*.jks
+*.jks.old
